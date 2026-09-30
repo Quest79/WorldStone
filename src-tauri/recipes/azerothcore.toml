@@ -1,0 +1,366 @@
+# Recipe: AzerothCore (Wrath of the Lich King 3.3.5a) with playerbots.
+#
+# Uses the mod-playerbots fork of AzerothCore, which is the only AzerothCore that carries the
+# playerbots: the fork's own branch plus the module that is built into it. Everything
+# emulator-specific is here; the engine's steps (fetch, build, extract, database, configure, run)
+# are the same as for every other recipe.
+#
+# Facts below were read from mod-playerbots/azerothcore-wotlk (branch Playerbot) and
+# mod-playerbots/mod-playerbots (branch master) in September 2026, and are checked by the real run.
+
+id = "azerothcore"
+name = "AzerothCore"
+game = "Wrath of the Lich King 3.3.5a"
+# Docker images are named from this: worldstone/wotlk-auth, worldstone/wotlk-world, ...
+edition = "wotlk"
+client_build = 12340
+
+# How this server looks in the app: Northrend, icy blue over frozen steel.
+[theme]
+accent = "#6cc6f5"
+deep = "#0e2a46"
+emblem = "snowflake"
+# A scene drawn faintly behind the button: Icecrown's spires under an aurora.
+backdrop = "northrend"
+
+# The fork carries the changes the bots need in the core itself.
+[[repos]]
+id = "server"
+url = "https://github.com/mod-playerbots/azerothcore-wotlk.git"
+branch = "Playerbot"
+path = "azerothcore-wotlk"
+# Upstream has no submodules: its dependencies are vendored.
+submodules = false
+
+# The bots themselves are a module: a folder of source that the fork's build picks up from
+# modules/ and compiles in (-DMODULES=static). So it is cloned inside the fork.
+[[repos]]
+id = "playerbots"
+url = "https://github.com/mod-playerbots/mod-playerbots.git"
+branch = "master"
+path = "modules/mod-playerbots"
+into = "server"
+submodules = false
+
+[build]
+repo = "server"
+# Upstream's own Docker files build on Ubuntu 24.04 with clang.
+base_image = "ubuntu:24.04"
+build_packages = [
+    # git: the build stops in CMake without it, even though the copied source has no repository to read.
+    "build-essential", "clang", "cmake", "git",
+    "libboost-all-dev", "libmysqlclient-dev", "libssl-dev", "libbz2-dev", "libreadline-dev", "libncurses-dev",
+    "zlib1g-dev", "liblzma-dev",
+]
+# Shared libraries the installed programs load (checked by running them at the end of the build).
+# The MySQL command-line client is what the servers' database updater runs.
+runtime_packages = [
+    "libmysqlclient21", "libssl3t64", "libbz2-1.0", "libreadline8t64", "libncurses6", "libicu74", "zlib1g", "liblzma5",
+    "gettext-base", "default-mysql-client",
+]
+install_prefix = "/azerothcore"
+required_files = [
+    "bin/authserver",
+    "bin/worldserver",
+    "bin/dbimport",
+    "bin/map_extractor",
+    "bin/vmap4_extractor",
+    "bin/vmap4_assembler",
+    "bin/mmaps_generator",
+    "bin/mmaps-config.yaml",
+    "etc/authserver.conf.dist",
+    "etc/worldserver.conf.dist",
+    "etc/dbimport.conf.dist",
+]
+# The servers read the SQL scripts from the source tree at run time (base tables, updates, and the
+# module's own), so they are kept in the image, at <prefix>/source/<folder>.
+keep_source = ["data/sql", "modules/mod-playerbots/data/sql"]
+
+[[build.smoke]]
+run = "bin/authserver"
+args = ["--version"]
+
+[[build.smoke]]
+run = "bin/worldserver"
+args = ["--version"]
+
+# Not bin/dbimport: it reads its configuration file before it looks at any argument, so it cannot
+# run without one. It links the same libraries as the two servers, and the first database import
+# runs it for real.
+
+[build.cmake]
+CMAKE_C_COMPILER = "clang"
+CMAKE_CXX_COMPILER = "clang++"
+APPS_BUILD = "all"
+# The four extractors and the database importer.
+TOOLS_BUILD = "all"
+# Everything compiled into the two servers, the module included.
+SCRIPTS = "static"
+MODULES = "static"
+Boost_USE_STATIC_LIBS = "ON"
+
+[playerbots]
+# The module installs its sample configuration only when it is compiled in, so its presence in the
+# built image is the proof that the bots are built in.
+marker = "etc/modules/playerbots.conf.dist"
+# One character per class on each bot account, death knights included.
+classes_per_account = 10
+characters_schema = "acore_characters"
+characters_table = "characters"
+characters_account_column = "account"
+characters_online_column = "online"
+
+# The account table and the world server console commands that manage accounts (cs_account.cpp).
+# Passwords are SRP6 here: the database keeps a salt and a verifier, so the app checks a password
+# itself instead of asking the database to compute a hash. The game-master level lives in its own table.
+[accounts]
+schema = "acore_auth"
+table = "account"
+id_column = "id"
+name_column = "username"
+gm_table = { table = "account_access", id_column = "id", level_column = "gmlevel" }
+created_column = "joindate"
+last_login_column = "last_login"
+# The bots' accounts carry no flag; they are the ones named rndbot0, rndbot1, ...
+# (AiPlayerbot.RandomBotAccountPrefix).
+bot_prefix = "RNDBOT"
+password_column = "verifier"
+salt_column = "salt"
+password_hash = "srp6"
+# MAX_ACCOUNT_STR and MAX_PASS_STR in AccountMgr.h.
+name_max = 17
+password_max = 16
+max_gm_level = 3
+create_command = "account create {name} {password}"
+password_command = "account set password {name} {password} {password}"
+# The trailing -1 is the realm id: every realm. From the console the command needs it.
+gm_command = "account set gmlevel {name} {level} -1"
+
+# The user's own game client. WorldStone never copies or modifies it; it is mounted read-only
+# into the extraction container.
+[client]
+executable = "Wow.exe"
+data_dir = "Data"
+# Archives the extractors open from the Data folder (map_extractor's CONF_mpq_list). The numbered
+# patches are optional for the tools; these are the ones a 3.3.5a client cannot lack.
+archives = ["common.MPQ", "common-2.MPQ", "expansion.MPQ", "lichking.MPQ", "patch.MPQ", "patch-2.MPQ", "patch-3.MPQ"]
+locale_archive = "locale-{locale}.MPQ"
+# 3.3.5a keeps the realm list address in the language folder.
+realmlist_file = "Data/{locale}/realmlist.wtf"
+realmlist_key = "realmlist"
+
+[[client.builds]]
+number = 12340
+name = "3.3.5a"
+
+# Turns the client into the data the world server reads. Four tools, run one after another in the
+# output folder; each phase is its own run so that progress is real and a finished phase is not
+# repeated after an interruption. -i takes the client's folder, vmap4_extractor takes its Data
+# folder.
+[extract]
+tool = "bin/map_extractor"
+# The mmaps generator reads its settings from this file, beside the program.
+inputs = ["bin/mmaps-config.yaml"]
+outputs = ["dbc", "maps", "Cameras", "vmaps", "mmaps"]
+# The raw models between vmap4_extractor and vmap4_assembler take room the server never uses.
+scratch = ["Buildings"]
+
+[[extract.phases]]
+id = "maps"
+label = "Client databases and maps"
+tool = "bin/map_extractor"
+args = ["-i", "{client}", "-o", "{dest}"]
+# One line per map: "Extract Azeroth (3/68)".
+count_prefix = "Extract "
+count_unit = "maps"
+
+[[extract.phases]]
+id = "models"
+label = "Building models"
+tool = "bin/vmap4_extractor"
+in_output = true
+# The tool refuses to run over the leftovers of an interrupted attempt.
+clean = ["Buildings"]
+args = ["-d", "{src}"]
+count_prefix = "Processing Map "
+count_unit = "maps"
+
+[[extract.phases]]
+id = "vmaps"
+label = "Collision data"
+tool = "bin/vmap4_assembler"
+in_output = true
+clean = ["vmaps"]
+args = ["Buildings", "vmaps"]
+count_prefix = "Creating map tree for map "
+count_unit = "maps"
+
+[[extract.phases]]
+id = "mmaps"
+label = "Navigation meshes"
+tool = "bin/mmaps_generator"
+in_output = true
+# --silent keeps it from waiting for a keypress; it prints its own percentage as it goes.
+args = ["--threads", "{threads}", "--silent"]
+count_percent = true
+
+# The configuration files. Each is made from the sample the build installs, and only the keys
+# listed here are ever written. `dbimport` belongs to no server: it is the file the database
+# importer is started with. `playerbots` is a module's file, which the world server reads only
+# from etc/modules, so it is kept in a folder of its own that is mounted there.
+[[config.files]]
+id = "authserver"
+label = "Auth server"
+template = "etc/authserver.conf.dist"
+service = "authserver"
+
+[config.files.set]
+LoginDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_auth"'
+LogsDir = '"{logs_dir}"'
+RealmServerPort = "{port}"
+# Only the app changes the databases (after a backup), so the servers do not update them on start.
+"Updates.EnableDatabases" = "0"
+
+[[config.files]]
+id = "worldserver"
+label = "World server"
+template = "etc/worldserver.conf.dist"
+service = "worldserver"
+
+[config.files.set]
+RealmID = "{realm_id}"
+DataDir = '"{data_dir}"'
+LogsDir = '"{logs_dir}"'
+SourceDirectory = '"{source_dir}"'
+MySQLExecutable = '"/usr/bin/mysql"'
+LoginDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_auth"'
+WorldDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_world"'
+CharacterDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_characters"'
+WorldServerPort = "{port}"
+# Bots count towards this limit as well as real players.
+PlayerLimit = "{player_limit}"
+# The console is how accounts are created, so it stays on.
+"Console.Enable" = "1"
+"Updates.EnableDatabases" = "0"
+
+[[config.files]]
+id = "dbimport"
+label = "Database import"
+template = "etc/dbimport.conf.dist"
+
+[config.files.set]
+LoginDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_auth"'
+WorldDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_world"'
+CharacterDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_characters"'
+LogsDir = '"{logs_dir}"'
+SourceDirectory = '"{source_dir}"'
+MySQLExecutable = '"/usr/bin/mysql"'
+"Updates.EnableDatabases" = "7"
+"Updates.AutoSetup" = "1"
+# The module's own scripts for the three databases above.
+"Updates.AllowedModules" = '"all"'
+
+# Playerbots are on and log in by themselves; how many is a setting (see Settings). Their own
+# database is created empty by the app and filled by the module the first time the world server
+# starts.
+[[config.files]]
+id = "playerbots"
+label = "Playerbots"
+template = "etc/modules/playerbots.conf.dist"
+service = "worldserver"
+folder = "modules"
+mount = "etc/modules"
+
+[config.files.set]
+"AiPlayerbot.Enabled" = "{bots_enabled}"
+"AiPlayerbot.RandomBotAutologin" = "1"
+"AiPlayerbot.MinRandomBots" = "{bots_min}"
+"AiPlayerbot.MaxRandomBots" = "{bots_max}"
+"AiPlayerbot.RandomBotAccountCount" = "{bots_accounts}"
+PlayerbotsDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};acore_playerbots"'
+"Playerbots.Updates.EnableDatabases" = "1"
+
+# One container per server program, in start order (the database is always first).
+[run]
+data_mount = "/worldstone/data"
+data_folder = "current"
+config_mount = "/worldstone/config"
+logs_mount = "/worldstone/logs"
+
+[[run.services]]
+id = "authserver"
+label = "Auth server"
+role = "auth"
+binary = "bin/authserver"
+args = ["-c", "{config}"]
+port = 3724
+config = "authserver"
+
+[[run.services]]
+id = "worldserver"
+label = "World server"
+role = "world"
+binary = "bin/worldserver"
+args = ["-c", "{config}"]
+port = 8085
+config = "worldserver"
+data = true
+# Standard input stays open so the console is reachable; it prints this before each command.
+console = true
+console_prompt = "AC>"
+stop_grace_secs = 120
+
+# AzerothCore's own tool (dbimport) creates the tables and applies the updates, reading the SQL
+# from the source kept in the image. The app creates the schemas and the account first, backs up
+# before the import, and checks the result afterwards.
+[database]
+# AzerothCore's own check refuses anything but MySQL 8.0 or newer (it does not accept MariaDB).
+# 8.4 is the long-term-support release its Docker files use.
+engine = "mysql"
+image = "mysql:8.4"
+repo = "server"
+method = "import_tool"
+user = "acore"
+# The game's tables hold four-byte characters; the importer creates its schemas the same way.
+charset = "utf8mb4"
+grants = [
+    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX", "LOCK TABLES",
+    "CREATE ROUTINE", "ALTER ROUTINE", "EXECUTE", "CREATE TEMPORARY TABLES", "TRIGGER", "REFERENCES",
+]
+server_args = [
+    "--sql-mode=NO_ENGINE_SUBSTITUTION",
+    "--character-set-server=utf8mb4",
+    "--collation-server=utf8mb4_unicode_ci",
+    "--max-allowed-packet=128M",
+    "--innodb-flush-log-at-trx-commit=2",
+]
+
+[database.import]
+# Runs with the world server's mounts: it reads the same configuration folders and the module's.
+service = "worldserver"
+tool = "bin/dbimport"
+config = "dbimport"
+args = ["-c", "{config}"]
+
+# The auth database's base data already holds the realm the players see, so it is only checked.
+[database.realm]
+schema = "acore_auth"
+table = "realmlist"
+
+[[database.schemas]]
+name = "acore_auth"
+required_tables = ["updates", "realmlist", "account", "account_access"]
+
+[[database.schemas]]
+name = "acore_characters"
+required_tables = ["updates", "characters", "character_inventory"]
+
+[[database.schemas]]
+name = "acore_world"
+required_tables = ["updates", "creature_template", "item_template"]
+
+# The bots' own tables. The module creates and updates them itself when the world server starts.
+[[database.schemas]]
+name = "acore_playerbots"
+self_managed = true
+required_tables = []

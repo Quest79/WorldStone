@@ -1,0 +1,350 @@
+# Recipe: MaNGOS Zero (Vanilla 1.12.x).
+#
+# A recipe holds the declarative facts about one emulator. The engine owns the generic
+# steps (fetch, build, extract, provision the database, configure, run); it reads
+# everything emulator-specific from here so another emulator is a new file, not new code.
+#
+# Facts below were checked against mangoszero/server and mangoszero/database (September 2026).
+
+id = "mangos-zero"
+name = "MaNGOS Zero"
+game = "Vanilla 1.12.x"
+# The word players know this edition by. Docker images are named from it, so Docker Desktop
+# shows worldstone/vanilla-realm and worldstone/vanilla-world rather than a code name.
+edition = "vanilla"
+# The user supplies their own client; this is the build the extractor expects.
+client_build = 5875
+
+# How this server looks in the app: Azeroth as the original game had it, gold on warm brown.
+[theme]
+accent = "#e3b04b"
+deep = "#3b2a12"
+emblem = "swords"
+# A scene drawn faintly behind the button: Azeroth's hills and a keep under the setting sun.
+backdrop = "azeroth"
+
+[[repos]]
+id = "server"
+url = "https://github.com/mangoszero/server.git"
+branch = "master"
+path = "mangoszero"
+# dep, src/realmd, ScriptDev3 and Eluna are submodules the build cannot do without.
+submodules = true
+
+[[repos]]
+id = "database"
+url = "https://github.com/mangoszero/database.git"
+branch = "master"
+path = "mangoszero-database"
+# The Realm database lives in a submodule (mangos/Realm_DB); without it Realm/ is empty.
+submodules = true
+
+[build]
+# The repository whose source is compiled.
+repo = "server"
+# Follows upstream's own extra/docker files: Ubuntu 22.04, clang, installed under /mangos.
+# Upstream requires OpenSSL 3 (Ubuntu 22.04 ships 3.0) and CMake >= 3.18 (ships 3.22).
+base_image = "ubuntu:22.04"
+build_packages = [
+    "build-essential", "clang", "cmake",
+    "libssl-dev", "libbz2-dev", "libmysqlclient-dev", "libreadline-dev",
+]
+# Shared libraries the installed binaries load (checked by running them at the end of the build).
+runtime_packages = ["libssl3", "libmysqlclient21", "libbz2-1.0", "libreadline8", "zlib1g"]
+install_prefix = "/mangos"
+# Files (relative to the install prefix) the finished image must contain.
+required_files = [
+    "bin/mangosd",
+    "bin/realmd",
+    "bin/tools/mangos-extractor",
+    "etc/mangosd.conf.dist",
+    "etc/realmd.conf.dist",
+]
+
+# Commands (relative to the install prefix) that must run and exit 0 inside the finished image.
+[[build.smoke]]
+run = "bin/mangosd"
+args = ["--version"]
+
+[[build.smoke]]
+run = "bin/realmd"
+args = ["--version"]
+
+# CMake options as NAME = value. Defaults not listed here stay at upstream's default.
+[build.cmake]
+CMAKE_C_COMPILER = "clang"
+CMAKE_CXX_COMPILER = "clang++"
+BUILD_MANGOSD = "ON"
+BUILD_REALMD = "ON"
+BUILD_TOOLS = "ON"
+SCRIPT_LIB_ELUNA = "ON"
+SCRIPT_LIB_SD3 = "ON"
+# Playerbots are the point of this server, so they are always built in (upstream default is
+# OFF). Upstream's own Linux CI builds with PLAYERBOTS=1. The bot tables ship in
+# Character/Setup/characterLoadDB.sql, so no separate bot SQL is needed.
+PLAYERBOTS = "ON"
+# Upstream defaults this ON; it is an out-of-process service that needs separate configuration.
+BUILD_AH_SERVICE = "OFF"
+WITH_TESTS = "OFF"
+WITH_NET_TESTS = "OFF"
+PCH = "OFF"
+
+[playerbots]
+# Installed only when playerbots are compiled in (PLAYERBOTS=ON), so its presence in the
+# built image is the proof that they are built in.
+marker = "etc/aiplayerbot.conf.dist"
+# Where the bots' characters live. The bots that are in the world are the characters of bot
+# accounts (see [accounts]) whose online flag is set; that is how the app counts them.
+characters_schema = "character0"
+characters_table = "characters"
+characters_account_column = "account"
+characters_online_column = "online"
+
+# The account table and the world server console commands that manage accounts (the handlers are
+# in src/game/ChatCommands/AccountCommands.cpp; the console runs them as the highest level).
+[accounts]
+schema = "realmd"
+table = "account"
+id_column = "id"
+name_column = "username"
+gm_column = "gmlevel"
+created_column = "joindate"
+last_login_column = "last_login"
+# Set by the bots on the accounts they create for themselves (they are named rndbot0, rndbot1, ...).
+bot_column = "playerBot"
+bot_prefix = "RNDBOT"
+password_column = "sha_pass_hash"
+password_hash = "sha1_name_password"
+# MAX_ACCOUNT_STR in AccountMgr.h; the 1.12 client cannot type a longer password either.
+name_max = 16
+password_max = 16
+max_gm_level = 3
+create_command = "account create {name} {password}"
+password_command = "account set password {name} {password} {password}"
+gm_command = "account set gmlevel {name} {level}"
+
+# The user's own game client. WorldStone never copies or modifies it; it is mounted read-only
+# into the extraction container. Supported builds are the ones upstream's README lists.
+[client]
+executable = "WoW.exe"
+# Folder inside the client holding the MPQ archives.
+data_dir = "Data"
+# Archives the extractor opens from the Data folder (mangoszero/server
+# src/tools/extractor/client/StormLibArchive.cpp, ClientArchives112). The numbered patches are
+# optional; these are the ones a 1.12 client cannot lack.
+archives = ["base.MPQ", "dbc.MPQ", "misc.MPQ", "model.MPQ", "terrain.MPQ", "wmo.MPQ"]
+# Present in <Data>/<locale>/ on a client that keeps its language in a subfolder. Merged
+# single-language clients have none, and the extractor reads them fine.
+locale_archive = "locale-{locale}.MPQ"
+# The client reads the realm list server's address from this line of this file, which sits next
+# to the executable on 1.12 clients.
+realmlist_file = "realmlist.wtf"
+realmlist_key = "realmlist"
+
+[[client.builds]]
+number = 5875
+name = "1.12.1"
+
+[[client.builds]]
+number = 6005
+name = "1.12.2"
+
+[[client.builds]]
+number = 6141
+name = "1.12.3"
+
+# Turns the client into the data mangosd reads (src/tools/extractor/Extractor.cpp).
+[extract]
+# Relative to the install prefix.
+tool = "bin/tools/mangos-extractor"
+# Given to every phase. {src} and {dest} are the client Data folder and the output folder inside
+# the container, {threads} is chosen from the Docker VM's CPUs and memory, {prefix} is the
+# install prefix. --no-menu keeps the tool from waiting for a keypress.
+args = [
+    "--src", "{src}", "--dest", "{dest}", "--threads", "{threads}", "--no-menu",
+    "--vessels", "{prefix}/bin/tools/vessels.txt", "--offmesh", "{prefix}/bin/tools/offmesh.txt",
+]
+# Hand-authored input the tool reads; the image must contain them or ship routes and jumps would
+# be silently missing.
+inputs = ["bin/tools/vessels.txt", "bin/tools/offmesh.txt"]
+# Folders the server reads. Extraction is only done when every one holds files.
+outputs = ["dbc", "tiles", "gomodels", "mmaps"]
+
+# The tool's own `all` order. Each phase is a separate run so that progress is real, a finished
+# phase is not repeated after an interruption, and nav (hours) reads tiles that are already baked.
+[[extract.phases]]
+id = "dbc"
+label = "Client databases"
+args = ["dbc"]
+
+[[extract.phases]]
+id = "gomodels"
+label = "Game object models"
+args = ["gomodels"]
+
+[[extract.phases]]
+id = "trans"
+label = "Ship decks"
+args = ["trans"]
+
+[[extract.phases]]
+id = "tile"
+label = "World tiles"
+args = ["tile"]
+# The tool prints one line per finished map.
+count_prefix = "map "
+count_unit = "maps"
+
+[[extract.phases]]
+id = "nav"
+label = "Movement maps"
+args = ["nav"]
+count_prefix = "nav "
+count_unit = "maps"
+
+# The configuration files the servers read. Each is made from the sample the build installs
+# (`<template>`), and only the keys listed here are ever written; everything else in the file
+# stays as the person left it. `{...}` placeholders are filled in by the engine: the database
+# connection (the database container's own address and the generated account), the data and
+# log folders inside the containers, this service's port, and the settings kept per instance.
+# Key names were checked against the installed .dist files and the playerbot source.
+[[config.files]]
+id = "realmd"
+label = "Realm server"
+template = "etc/realmd.conf.dist"
+service = "realmd"
+
+[config.files.set]
+LoginDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};realmd"'
+LogsDir = '"{logs_dir}"'
+RealmServerPort = "{port}"
+
+[[config.files]]
+id = "mangosd"
+label = "World server"
+template = "etc/mangosd.conf.dist"
+service = "mangosd"
+
+[config.files.set]
+RealmID = "{realm_id}"
+DataDir = '"{data_dir}"'
+LogsDir = '"{logs_dir}"'
+LoginDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};realmd"'
+WorldDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};mangos0"'
+CharacterDatabaseInfo = '"{db_host};{db_port};{db_user};{db_password};character0"'
+WorldServerPort = "{port}"
+# Bots count towards this limit as well as real players.
+PlayerLimit = "{player_limit}"
+# The console is how accounts are created, so it stays on.
+"Console.Enable" = "1"
+# The GM log writes every console command as typed, and "account create" carries the password.
+GmLogFile = '""'
+# Only decides whether the start-up banner says "PlayerBots disabled" (the random bots read
+# aiplayerbot.conf); it is set so the log agrees with the bots that are running.
+"PlayerbotAI.DisableBots" = "0"
+
+# Playerbots are on and log in by themselves; how many is a setting (see Settings). The keys are
+# the ones PlayerbotAIConfig.cpp reads. Bot accounts (rndbot0, rndbot1, ...) and their characters
+# (one per class) are created by the server on its first start.
+[[config.files]]
+id = "aiplayerbot"
+label = "Playerbots"
+template = "etc/aiplayerbot.conf.dist"
+service = "mangosd"
+
+[config.files.set]
+"AiPlayerbot.Enabled" = "{bots_enabled}"
+"AiPlayerbot.RandomBotAutologin" = "1"
+"AiPlayerbot.RandomBotLoginAtStartup" = "1"
+"AiPlayerbot.MinRandomBots" = "{bots_min}"
+"AiPlayerbot.MaxRandomBots" = "{bots_max}"
+"AiPlayerbot.RandomBotAccountCount" = "{bots_accounts}"
+
+# One container per server program, in start order (the database is always first). Each publishes
+# its port on the host and is healthy once that port accepts connections; the world server only
+# listens after the world has finished loading.
+[run]
+data_mount = "/worldstone/data"
+data_folder = "current"
+config_mount = "/worldstone/config"
+logs_mount = "/worldstone/logs"
+
+[[run.services]]
+id = "realmd"
+label = "Realm server"
+# The second half of the image name: worldstone/<edition>-<role>.
+role = "realm"
+binary = "bin/realmd"
+args = ["-c", "{config}"]
+port = 3724
+config = "realmd"
+
+[[run.services]]
+id = "mangosd"
+label = "World server"
+role = "world"
+binary = "bin/mangosd"
+args = ["-c", "{config}"]
+port = 8085
+config = "mangosd"
+data = true
+# Standard input stays open, as upstream's own compose file does, so the console is reachable.
+console = true
+console_prompt = "mangos>"
+# Saving every online character and the bots takes a moment.
+stop_grace_secs = 120
+
+# The SQL comes from the `database` repository (mangoszero/database), laid out as
+# <dir>/Setup/<setup>, <dir>/Setup/<populate>/*.sql and <dir>/Updates/<release>/*.sql.
+[database]
+image = "mariadb:11.4"
+repo = "database"
+# The one account the game servers use. Its password is generated per instance.
+user = "mangos"
+# What that account may do in the three schemas (upstream's own grant, minus what it never needs).
+grants = [
+    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+    "LOCK TABLES", "CREATE ROUTINE", "ALTER ROUTINE",
+]
+# The world data is loaded as thousands of inserts and the update scripts are written for a
+# non-strict server, as in upstream's own setup notes.
+server_args = [
+    "--sql-mode=NO_ENGINE_SUBSTITUTION",
+    "--character-set-server=utf8mb3",
+    "--collation-server=utf8mb3_general_ci",
+    "--max-allowed-packet=128M",
+    "--innodb-flush-log-at-trx-commit=2",
+]
+
+# Tools/updateRealm.sql adds the realm entry players see in the realm list; it is only run when
+# the table is empty, because it adds a new row every time.
+[database.realm]
+schema = "realmd"
+table = "realmlist"
+sql = "Tools/updateRealm.sql"
+
+# `populate` is a folder of data files loaded after the structure; `updates` are the release
+# folders whose scripts bring a database up to date. Every update records itself in `db_version`,
+# which is how WorldStone knows it was applied.
+[[database.schemas]]
+name = "realmd"
+dir = "Realm"
+setup = "realmdLoadDB.sql"
+updates = ["Rel21", "Rel22"]
+required_tables = ["db_version", "realmlist", "account"]
+
+[[database.schemas]]
+name = "character0"
+dir = "Character"
+setup = "characterLoadDB.sql"
+updates = ["Rel21", "Rel22"]
+# ai_playerbot_* are the bots' own tables; without them the bots cannot run.
+required_tables = ["db_version", "characters", "ai_playerbot_names"]
+
+[[database.schemas]]
+name = "mangos0"
+dir = "World"
+setup = "mangosdLoadDB.sql"
+populate = "FullDB"
+updates = ["Rel21", "Rel22"]
+required_tables = ["db_version", "creature_template", "item_template"]
